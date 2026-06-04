@@ -1,0 +1,48 @@
+MIT License
+
+Copyright (c) 2026 P1M0U
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
+MIT 许可证 — 中文解释（仅作参考，不具备法律效力）
+
+1. 许可授予
+   任何人获得本软件及相关文档（统称"软件"）的副本后，均可
+   【免费】使用、复制、修改、合并、发布、分发、再许可和/或销售
+   该软件的副本。
+
+2. 条件
+   必须在所有副本或实质性部分中包含上述【版权声明】和【本许可声明】。
+
+3. 免责声明
+   本软件按"原样"提供，【不提供任何明示或暗示的保证】，
+   包括但不限于适销性、特定用途适用性和非侵权性的保证。
+   在任何情况下，作者或版权持有人均【不对任何索赔、损害赔偿
+   或其他责任负责】。
+
+通俗总结：
+  ✅ 你可以自由使用、修改和分发这份内容（包括商业用途）
+  ✅ 只需保留版权声明和许可证文本
+  ❌ 作者不对使用本软件造成的任何后果承担法律责任
+
+本仓库（skills-space）中的所有技能（Skills）均采用此 MIT 许可协议。
+这意味着你可以自由地在自己的 Hermes Agent、Claude Code、Codex 等
+Agent 环境中使用、修改和分享这些技能文件。
