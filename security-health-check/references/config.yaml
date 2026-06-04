@@ -1,0 +1,27 @@
+# 服务器安全健康检查 — 阈值配置
+security_check:
+  ssh:
+    warn_failed_24h: 20
+    crit_failed_24h: 100
+    fail2ban_risk_reduction: true
+  malware:
+    high_cpu_threshold: 50.0
+    scan_paths:
+      - /dev/shm
+      - /tmp
+  suid:
+    danger_paths:
+      - /tmp
+      - /dev/shm
+      - /var/tmp
+      - /home
+  docker:
+    crit_exposed_tcp: true
+  disk:
+    warn_pct: 80
+    crit_pct: 92
+  memory:
+    warn_available_mb: 500
+    crit_available_mb: 200
+  watchdog:
+    report_threshold: "crit"

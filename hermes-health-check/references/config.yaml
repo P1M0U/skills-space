@@ -1,0 +1,15 @@
+# Hermes Health Check — Threshold Configuration
+health_check:
+  disk:
+    warn_pct: 80
+    crit_pct: 92
+  memory:
+    warn_available_mb: 500
+    crit_available_mb: 200
+  gateway:
+    warn_memory_mb: 1000
+    crit_memory_mb: 2000
+    known_reconnect_patterns:
+      - "code=4009.*Session timed out"
+  watchdog:
+    report_threshold: "crit"
