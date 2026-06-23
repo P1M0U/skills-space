@@ -41,7 +41,7 @@ if command -v journalctl &>/dev/null; then
     if [ "$TOTAL" -gt "$SSH_FAIL_THRESHOLD" ]; then
         alert "SSH 暴力破解！最近30min: 失败登录 ${SSH_FAILS} 次，无效用户 ${SSH_INVALID} 次"
         # Top 3 IP
-        TOP_IPS=$(sudo -n journalctl -u sshd --since "30 min ago" 2>/dev/null | grep "Failed password" | grep -oP 'from \\K[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+' | sort | uniq -c | sort -rn | head -3)
+        TOP_IPS=$(sudo -n journalctl -u sshd --since "30 min ago" 2>/dev/null | grep "Failed password" | grep -oP 'from \K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -3)
         if [ -n "$TOP_IPS" ]; then
             ALERTS="${ALERTS}\\n攻击来源 TOP3:\\n${TOP_IPS}"
         fi
