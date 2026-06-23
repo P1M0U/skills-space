@@ -60,5 +60,7 @@ If auditd is not installed (Phase 18), score it as ⚠️ (1/2) rather than ❌ 
 
 - **Phase 3 with multiple ❌**: Even one ❌ in SSH means whole phase = 0/2. Don't "average" sub-items.
 - **Phase 4 with fail2ban**: fail2ban running → upgrade "⚠️ no fail2ban" to "✅ fail2ban active", which shifts score to 2/2.
+- **Phase 9 sudo auth failures ≠ failed services**: `pam_unix(sudo:auth): conversation failed` in journalctl is a cron sudoers configuration issue, NOT a systemd service failure. If `systemctl --failed` returns empty, Phase 9 = 2/2 regardless of sudo auth errors. Mark sudo auth failures as INFO in the report, not as a Phase 9 penalty.
 - **Phase 12 with Docker**: `ip_forward=1` when Docker is installed = no penalty. Score as if it were at the CIS value.
 - **Phase 18 none/blocked**: auditd not installed = ⚠️ (1/2). Only ❌ if it was expected to be running and failed.
+- **Numeric score vs等级不要混淆**: 数值评分独立计算（如 83/100），等级由数值+CRITICAL覆盖决定（83分但有CRITICAL→INSECURE）。报告应显示真实数值评分，不要篡改以匹配等级。
