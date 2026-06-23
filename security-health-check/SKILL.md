@@ -1,7 +1,7 @@
 ---
 name: security-health-check
 description: "Production-grade server security health check — firewall audit, SSH hardening, brute force detection, rootkit/malware scan, user audit, SUID audit, Docker security, systemd health, kernel hardening, crontab analysis, disk/memory thresholds. Supports interactive mode and no-agent cron watchdog."
-version: 2.3.0
+version: 2.5.0
 platforms: [linux]
 metadata:
   hermes:
@@ -69,6 +69,7 @@ ss -tlnp 2>&1 | grep -vE "127.0.0.1|::1:"
 - 列出所有对外暴露的端口
 - 每发现一个非预期端口 → ⚠️ WARN
 - MySQL (3306)、Redis (6379)、Docker (2375) 暴露到 0.0.0.0 → ❌ CRITICAL
+- ⚠️ **Docker 桥接网络误判**：172.17.0.x 是 Docker 默认桥接网络 IP，绑定在此上的服务（如 172.17.0.1:3306）**不直接暴露给互联网**——除非有端口映射（`-p 3306:3306`）。检查时应排除 172.17.0.x/172.18.0.x 等 Docker 桥接网段，仅关注绑定到 0.0.0.0 或公网 IP 的端口
 
 ### Phase 3: SSH 安全加固检查
 
@@ -80,8 +81,18 @@ sudo grep -E "^PermitRootLogin|^PasswordAuthentication|^Port |^MaxAuthTries|^Cli
 ss -tlnp 2>&1 | grep -E "sshd|ssh"
 
 # ⚠️ 检查 socket 激活（Ubuntu 23.10+ 默认启用，会覆盖 sshd_config 端口设置）
-sshd -T 2>/dev/null | grep "^port "   # 有效配置中的端口
+sshd -T 2>/dev/null | grep "^port "   # 有效配置中的端口（socket 激活时可能为空）
 sudo systemctl is-active ssh.socket 2>/dev/null   # socket 是否活跃
+# 注意：socket 激活时 ss -tlnp | grep ssh 也会返回空（无进程名），
+# 用端口号定位：ss -tlnp | grep 2222
+
+# ⚠️ 综合诊断流程（推荐执行顺序）：
+# 1. 先检查 ssh.socket 是否活跃
+# 2. 如果活跃，用端口号（如 2222）在 ss 输出中定位，不要用进程名 grep
+# 3. sshd -T 在 socket 激活时返回空（exit code 1），不代表 SSH 未运行
+# 4. 有效端口 = ssh.socket 的 ListenStream（override.conf 或默认 22）
+# 如果 ssh.socket 活跃且 sshd -T 返回空，仍应检查 sshd_config 中的
+# PermitRootLogin / PasswordAuthentication 等安全配置项（这些不受 socket 影响）
 ```
 
 安全基线（CIS Benchmark 级别）：
@@ -140,22 +151,28 @@ sudo systemctl restart ssh
 > sudo systemctl restart ssh
 > ```
 >
+> ⚠️ **`sshd -T` 在 socket 激活时返回空**：当 `ssh.socket` 活跃时，`sshd -T | grep "^port "` 可能返回空输出（exit code 1），因为 sshd 进程并非持久运行、端口由 socket 单元控制。
+>
+> ⚠️ **`ss -tlnp | grep ssh` 在 socket 激活时也返回空**：socket-activated 服务（如 `ssh.socket`）在 `ss -tlnp` 输出中**没有进程名列**（该列为空），因此 `grep ssh` 匹配不到任何内容。这是 2026-06 实测发现的坑。**诊断方法**：直接查看完整 `ss -tlnp` 输出，用端口号（如 `grep 2222`）而非进程名来定位 SSH 监听。`sshd -T` 仅作为辅助参考（它返回的是 sshd_config 中的静态配置，不代表运行时端口）。
+>
 > ⚠️ **Hermes 安全策略注意**：`sudo sed -i` 修改 `/etc/ssh/sshd_config` 可能被安全策略拦截（判定为"in-place edit of system config"）。拦截后**不要重试**——在报告中列出修复命令供用户手动执行即可。`sudo tee -a` 和 `sudo systemctl restart ssh` 通常不受影响。
 >
 > ⚠️ 修改 SSH 配置前先确保当前 SSH 会话不会中断（例如：用 screen/tmux 或开第二个窗口测试）。`PermitRootLogin` 和 `PasswordAuthentication` 是最高优先级的修复项。
 
 ### Phase 4: SSH 暴力破解检测
 
+> ⚠️ **Ubuntu 服务名称**：Ubuntu 的 SSH 服务名是 `ssh`，不是 `sshd`。以下示例使用 `ssh`，CentOS/RHEL 需改为 `sshd`。不确定时运行 `systemctl list-units | grep ssh` 确认。
+
 ```bash
-# 最近24小时的失败登录
-sudo journalctl -u sshd --since "24 hours ago" 2>/dev/null | grep "Failed password"
+# 最近24小时的失败登录（Ubuntu 用 ssh，CentOS 用 sshd）
+sudo journalctl -u ssh --since "24 hours ago" 2>/dev/null | grep "Failed password"
 
 # 统计数据
-SSH_FAILS=$(sudo journalctl -u sshd --since "24 hours ago" 2>/dev/null | grep -c "Failed password" || true)
-SSH_INVALID=$(sudo journalctl -u sshd --since "24 hours ago" 2>/dev/null | grep -c "Invalid user" || true)
+SSH_FAILS=$(sudo journalctl -u ssh --since "24 hours ago" 2>/dev/null | grep -c "Failed password" || true)
+SSH_INVALID=$(sudo journalctl -u ssh --since "24 hours ago" 2>/dev/null | grep -c "Invalid user" || true)
 
 # Top 10 攻击来源 IP
-sudo journalctl -u sshd --since "24 hours ago" 2>/dev/null | grep "Failed password" | grep -oP 'from \K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -10
+sudo journalctl -u ssh --since "24 hours ago" 2>/dev/null | grep "Failed password" | grep -oP 'from \K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -10
 
 # 检查 lastb 记录
 lastb 2>/dev/null | head -10
@@ -167,38 +184,45 @@ sudo fail2ban-client status sshd 2>/dev/null || echo "fail2ban not installed"
 阈值：
 - > 20 次/24h → ⚠️ WARN
 - > 100 次/24h → ❌ CRITICAL
-- 有 fail2ban 且正常运行 → 风险等级降一级
+- 有 fail2ban 且正常运行 → 风险等级降一级（❌ 降为 ⚠️，⚠️ 降为 ✅）
+
+**极端攻击量场景（1000+ 次/24h）的评分决策：**
+即使 fail2ban 活跃，攻击量达到四位数时 fail2ban 只能延缓而非消除风险（攻击者不断换 IP）。评分规则：
+- ≤ 500 次 + fail2ban 活跃 → ✅ 2/2（fail2ban 有效控制）
+- 500-2000 次 + fail2ban 活跃 → ⚠️ 1/2（fail2ban 在工作但压力大）
+- > 2000 次 + fail2ban 活跃 → ⚠️ 1/2（仍优于 ❌，但需报告攻击规模）
+- 无 fail2ban + > 100 次 → ❌ 0/2
 
 > 深度分析（按时间范围、攻击类型分类、IP/用户名统计）见 `references/ssh-brute-force-log-analysis.md`。当用户要求分析特定时间段的攻击（如"昨晚"、"过去3天"）时，使用该参考文件中的方法。
 
 ### Phase 5: 恶意进程 & Rootkit 扫描
 
+> ⚠️ **必须拆分为独立 terminal 调用**——不要把多个检查合并到一个 bash 块中。Hermes terminal 工具会将 `&&` 误解析为后台操作符（`&`），导致 "Foreground command uses '&' backgrounding" 错误。每组检查用独立的 `terminal()` 调用。
+
 ```bash
-# 标准恶意软件特征
-ps aux 2>/dev/null | grep -iE "xmrig|cryptonight|minerd|stratum|kinsing|kdevtmpfsi|pwnrig|masscan|sustes|watchbog|jenkinx|sysupdate|networkservice|gates|lady|ddgs"
+# 检查 1：标准恶意软件特征（独立调用）
+ps aux 2>/dev/null | grep -iE "xmrig|cryptonight|minerd|stratum|kinsing|kdevtmpfsi|pwnrig|masscan|sustes|watchbog|jenkinx|sysupdate|networkservice|gates|lady|ddgs" | grep -v grep || echo "MALWARE: none"
 
-# 高 CPU 异常进程（CPU > 50%）
-ps aux --sort=-%cpu 2>/dev/null | awk '$3 > 50.0'
+# 检查 2：高 CPU 异常进程（独立调用）
+ps aux --sort=-%cpu 2>/dev/null | head -6
 
-# 隐藏进程检查（对比 /proc 与 ps 输出）
-# 检查 /proc 中不正常的高 PID 范围
+# 检查 3：隐藏进程检查（独立调用）
 ls /proc/ 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -5
 
-# 检查异常网络连接（无对应进程）
+# 检查 4：异常网络连接（独立调用）
 ss -tunap 2>&1 | grep -v "users:((" | head -10
 
-# 检查 /dev/shm 和 /tmp 中的可疑文件
+# 检查 5：可疑文件（独立调用）
 find /dev/shm /tmp -type f \( -executable -o -name "*.sh" -o -name "*.pl" \) -newer /etc/passwd 2>/dev/null | head -10
 
-# 检查典型挖矿路径
-for d in /dev/shm /tmp /var/tmp /var/spool/cron; do
-  ls -la "$d" 2>/dev/null | grep -iE "xmrig|minerd|kinsing|kdevtmpfsi"
-done
+# 检查 6：挖矿路径（独立调用）
+for d in /dev/shm /tmp /var/tmp /var/spool/cron; do ls -la "$d" 2>/dev/null | grep -iE "xmrig|minerd|kinsing|kdevtmpfsi"; done || echo "MINING: none"
 ```
 
 - 匹配到挖矿/后门进程 → ❌ CRITICAL
 - 发现隐藏进程、无主连接 → ⚠️ WARN
 - /dev/shm 和 /tmp 有新近可执行文件 → ⚠️ WARN
+- ⚠️ **Hermes 临时脚本误判**：Hermes 自身会在 `/tmp` 创建 `hermes-snap-*.sh`（terminal 会话快照）和 `test_*.sh`（调试脚本），这些文件会被 Phase 5 的 `find /tmp` 捕获。**不要将它们标记为可疑**——它们属于 pimou 用户且文件名匹配 `hermes-` 或 `test_` 前缀时应排除。报告中可标注 INFO 级别说明发现的是 Hermes 临时文件。
 
 ### Phase 6: 用户账户审计
 
@@ -207,7 +231,8 @@ done
 grep -E "^[^:]+:[^:]+:[0-9]+" /etc/passwd 2>/dev/null | awk -F: '$3 >= 1000 || $3 == 0 {print "User: "$1" (UID: "$3", Shell: "$NF")"}'
 
 # 空密码账户（注：Hermes 安全策略可能拦截此命令，被拦截时跳过即可）
-sudo awk -F: '($2 == "" || $2 == "!") && $3 != 65534 {print "⚠️ Empty/no password: "$1}' /etc/shadow 2>/dev/null
+# 注意：$2 == "!" 是锁定账户（安全），不要误判为空密码！仅 $2 == "" 才是空密码
+sudo awk -F: '$2 == "" && $3 != 65534 {print "⚠️ Empty/no password: "$1}' /etc/shadow 2>/dev/null
 
 # 最近添加的用户（检查 passwd 文件的 mtime）
 stat /etc/passwd 2>/dev/null | grep Modify
@@ -240,6 +265,8 @@ find / -perm -2000 -type f 2>/dev/null | sort
 
 - /tmp、/dev/shm、/home 下存在 SUID 文件 → ❌ CRITICAL（典型提权攻击）
 - 标准路径之外的罕见 SUID 文件 → ⚠️ WARN
+
+> ⚠️ **`find / -perm -4000` 超时陷阱**：全盘 SUID 搜索（`find / -perm -4000 -type f`）在大磁盘或高 inode 使用的服务器上容易超过 30 秒超时。**分步执行**：先用 `find / -perm -4000 -type f 2>/dev/null | head -20`（带 head 截断）或限定范围 `find /usr /bin /sbin -perm -4000 -type f`。如果全盘搜索超时，优先检查高风险目录（`/tmp /dev/shm /var/tmp /home`），全量 SUID 列表可标记为"因超时跳过"。
 
 ### Phase 8: Crontab 安全检查
 
@@ -279,29 +306,23 @@ sudo journalctl -p 3 --since "24 hours ago" --no-pager 2>&1 | tail -20
 
 ### Phase 10: Docker 安全检查
 
+> ⚠️ **Docker 检查必须拆分为独立 terminal 调用**。`if/else/fi` 块在 Hermes terminal 工具中会因 bash `eval` 包装器而报语法错误（`else` token error）。先用 `command -v docker` 判断是否安装，再分步执行各项检查。
+
 ```bash
-# 检查 Docker 是否安装
-if command -v docker &>/dev/null; then
-  docker info --format '{{.ServerVersion}}' 2>/dev/null && echo "Docker: installed" || echo "Docker: not running"
+# 步骤 1：检查 Docker 是否安装（独立调用）
+command -v docker && echo "Docker: installed" || echo "Docker: not installed"
 
-  # 检查 Docker 守护进程是否暴露 TCP（不安全）
-  ss -tlnp 2>&1 | grep ":2375" && echo "❌ Docker TCP 端口 2375 暴露（无 TLS！）" || echo "✅ Docker TCP (2375): not exposed"
+# 步骤 2：版本（独立调用）
+docker version --format '{{.Server.Version}}' 2>/dev/null
 
-  # 列出运行中的容器
-  docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null
+# 步骤 3：TCP 2375 暴露检查（独立调用）
+ss -tlnp 2>&1 | grep ":2375" && echo "EXPOSED" || echo "Docker TCP 2375: not exposed"
 
-  # 检查特权容器
-  docker ps --filter "status=running" --format "{{.Names}}" 2>/dev/null | while read c; do
-    PRIV=$(docker inspect "$c" --format '{{.HostConfig.Privileged}}' 2>/dev/null)
-    [ "$PRIV" = "true" ] && echo "❌ 特权容器: $c"
-  done
+# 步骤 4：运行中容器（独立调用）
+docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null
 
-  # Docker socket 权限
-  ls -la /var/run/docker.sock 2>/dev/null | grep -v "root:docker"
-  
-  # 检查 Docker 版本（太旧可能有漏洞）
-  docker version --format '{{.Server.Version}}' 2>/dev/null
-fi
+# 步骤 5：Docker socket 权限（独立调用）
+ls -la /var/run/docker.sock 2>/dev/null
 ```
 
 - Docker TCP (2375) 暴露 → ❌ CRITICAL
@@ -319,11 +340,26 @@ if command -v getenforce &>/dev/null; then
 fi
 
 # AppArmor
-if command -v aa-status &>/dev/null; then
-  sudo aa-status 2>/dev/null | head -10
+# ⚠️ sudo PATH 陷阱：aa-status 通常在 /usr/sbin/，而 sudo 的 secure_path
+# 可能不包含 /usr/sbin，导致 `sudo aa-status` 静默失败（空输出）。
+# 修复：检测完整路径后用 sudo 调用全路径。
+AA_PATH=$(command -v aa-status 2>/dev/null || [ -x /usr/sbin/aa-status ] && echo "/usr/sbin/aa-status")
+if [ -n "$AA_PATH" ]; then
+  sudo "$AA_PATH" 2>/dev/null | head -10
 fi
 ```
 
+**AppArmor 降级检查**（aa-status 不可用时的退路）：
+
+```bash
+# Ubuntu 24.04+ 即使安装了 AppArmor，aa-status 也可能不在 PATH 中。
+# 降级方案：检查内核模块是否加载 + dpkg 确认已安装。
+cat /sys/module/apparmor/parameters/enabled 2>/dev/null  # 返回 Y = 已加载
+dpkg -l apparmor 2>/dev/null | grep -E "^ii"             # 确认已安装
+```
+
+- aa-status 返回 profiles/enforced 信息 → ✅
+- 内核模块已加载 (Y) + 已安装 → ✅ (降级确认)
 - SELinux disabled → ⚠️ WARN
 - SELinux permissive → ⚠️ WARN
 - SELinux enforcing → ✅
@@ -453,20 +489,63 @@ fi
 
 ## 评分系统
 
-| 组件 | 权重 |
-|------|------|
-| Phase 1-2 (防火墙/端口) | 12% |
-| Phase 3-4 (SSH) | 15% |
-| Phase 5 (恶意进程) | 20% |
-| Phase 6-7 (用户/SUID) | 10% |
-| Phase 8-10 (Crontab/Systemd/Docker) | 15% |
-| Phase 11-12 (SELinux/内核) | 8% |
-| Phase 13-14 (磁盘/内存) | 10% |
-| Phase 15-18 (日志/密钥/更新) | 10% |
+### 逐相位权重表（直接使用，无需再查参考文件）
 
-单项评分：✅=2分，⚠️=1分，❌=0分。加权后总分 0-100。
+| Phase | 权重 | 评分规则 |
+|-------|------|----------|
+| 1. 防火墙 | 6% | ✅=2, ⚠️=1, ❌=0 |
+| 2. 端口审计 | 6% | ✅=2, ⚠️=1, ❌=0 |
+| 3. SSH 加固 | 7.5% | **任何 ❌ CRITICAL → 整个 Phase = 0/2**（不取平均） |
+| 4. SSH 暴力破解 | 7.5% | ≤500+fail2ban→✅, 500-2000+fail2ban→⚠️, >2000+fail2ban→⚠️, 无fail2ban+>100→❌ |
+| 5. 恶意进程 | 20% | ✅=2, ⚠️=1, ❌=0 |
+| 6. 用户审计 | 5% | ✅=2, ⚠️=1, ❌=0 |
+| 7. SUID/SGID | 5% | ✅=2, ⚠️=1, ❌=0 |
+| 8. Crontab | 5% | ✅=2, ⚠️=1, ❌=0 |
+| 9. Systemd | 5% | ✅=2, ⚠️=1, ❌=0 |
+| 10. Docker | 5% | ✅=2, ⚠️=1, ❌=0 |
+| 11. SELinux/AppArmor | 4% | ✅=2, ⚠️=1, ❌=0 |
+| 12. 内核参数 | 4% | ✅=2, ⚠️=1, ❌=0 |
+| 13. 磁盘 | 5% | ✅=2, ⚠️=1, ❌=0 |
+| 14. 内存 | 5% | ✅=2, ⚠️=1, ❌=0 |
+| 15. 登录日志 | 2.5% | ✅=2, ⚠️=1, ❌=0 |
+| 16. SSH 密钥 | 2.5% | ✅=2, ⚠️=1, ❌=0 |
+| 17. 系统更新 | 2.5% | ✅=2, ⚠️=1, ❌=0 |
+| 18. Auditd | 2.5% | ✅=2, ⚠️=1, ❌=0 |
 
-> ⚠️ **评分计算必须使用 `references/scoring-worked-example.md` 中的逐相位独立权重法**，不要使用上方简化分组表做组内平均。上方分组权重仅为快速参考（各组内相位权重之和），实际计算时应将每个 Phase 拆开，用独立权重逐项乘算后求和。示例文件包含完整的逐相位权重表和加权演算过程。
+### 加权公式
+
+```
+phase_contribution = (score / 2.0) × weight_percentage
+total = sum(all phase_contributions), rounded to integer
+```
+
+### 关键评分陷阱
+
+1. **Phase 3 一票否决**：SSH 加固中出现任何 ❌ CRITICAL（如 PasswordAuthentication=yes、PermitRootLogin=yes），**整个 Phase 直接判 0/2**，不要因为其他子项通过就给 1/2 或 2/2。这是最常见的评分错误。
+2. **Phase 4 + fail2ban**：fail2ban 活跃时，攻击量阈值可适当放宽（见 Phase 4 详细规则）。
+3. **Phase 12 + Docker**：`ip_forward=1` 在 Docker 已安装时不算安全风险，不扣分。
+4. **Phase 18 auditd**：未安装 = ⚠️ (1/2)，不是 ❌。
+5. **Phase 9 sudo auth 失败 ≠ failed 服务**：journalctl 中出现 `pam_unix(sudo:auth): conversation failed` 是 cron 任务的 sudo 认证问题（通常是 sudoers.d 配置不完整），**不是 systemd 服务失败**。不要因此将 Phase 9 降为 1/2——只要 `systemctl --failed` 返回空，Phase 9 就是 2/2。这类 sudo auth 错误应在报告中作为 INFO 标注，提醒用户检查 cron 任务的 sudoers 配置。
+
+> 📖 完整演算示例见 `references/scoring-worked-example.md`。
+
+### 评分双重评估（重要）
+
+评分由两个独立系统组成，**不要混淆**：
+
+1. **数值评分**：按加权公式计算，范围 0-100，用于 `📊 安全评分: X/100` 行
+2. **安全等级**：基于数值评分 + CRITICAL 覆盖规则，用于最终判定
+
+```
+数值评分 = Σ (phase_score / 2.0 × weight%)，四舍五入到整数
+
+安全等级判定：
+  ≥ 90 → ✅ SECURE
+  ≥ 70 且无任何 ❌ CRITICAL → ⚠️ NEEDS ATTENTION
+  < 70 或任意 ❌ CRITICAL → ❌ INSECURE
+```
+
+**常见错误**：数值评分为 83（NEEDS ATTENTION 级别），但因 Phase 3 存在 CRITICAL，最终等级为 INSECURE。这是**正确的**——报告应显示 `📊 安全评分: 83/100 — ❌ INSECURE`（因 CRITICAL 覆盖），**不要**为了匹配 INSECURE 等级而篡改数值评分为 <70。
 
 | 分数 | 等级 |
 |------|------|
@@ -554,7 +633,7 @@ hermes cron create --name "紧急安全监控" \
 
 **Watchdog 行为：** 仅 CRITICAL 级别输出（空 stdout = 不发送消息）
 
-**深夜汇总报告：** 凌晨 5:30-6:00 自动输出整晚安全检查汇总（SSH 攻击统计、系统资源、安全事件），即使无 CRITICAL 告警也会发送。
+**每日汇总报告：** 早上 8:00-8:30 自动输出整晚安全检查汇总（SSH 攻击统计、系统资源、安全事件），即使无 CRITICAL 告警也会发送。
 
 **多平台投递（fallback）：** `deliver` 支持逗号分隔多个目标，优先发送到第一个，不可用时自动 fallback 到后续目标：
 ```
@@ -565,19 +644,34 @@ hermes cron create --name "紧急安全监控" \
 
 ## 注意事项 & 易错点
 
+### Skill 更新说明
+
+本 skill 是 **local** 来源（本地创建/维护），不是从官方 hub 安装的。因此：
+
+- `hermes skills check` **不会**检查本 skill 的更新（只检查 `official` 和 `builtin` 来源）
+- `hermes skills update` **不会**更新本 skill
+- 如需更新，需手动对比远程仓库（如有）或直接编辑 `~/.hermes/skills/security-health-check/SKILL.md`
+- 版本号在 SKILL.md frontmatter 的 `version` 字段中维护（当前: 2.5.0）
+
+与之对比：`hermes-agent` 是 `builtin` 来源，随 Hermes 核心更新；`pixel-art`、`creative-ideation` 等是 `official` 来源，通过 `hermes skills update` 自动更新。
+
 ### Watchdog 脚本陷阱
 
+- **`no_agent` cron 脚本写入 `/var/log/` 权限被拒**：Hermes `no_agent` cron 脚本以当前用户身份运行，没有继承 sudo 上下文。脚本中 `echo "..." >> /var/log/xxx.log` 会因 Permission denied 失败，exit code 为 1，**Hermes 会把 stderr 当作消息发送给用户**（表现为"明明没有异常却收到了通知"）。修复：所有写入系统路径的 echo 必须用 `echo "..." | sudo tee -a /var/log/xxx.log > /dev/null` 代替 `>>` 重定向。诊断方法：检查 `~/.hermes/cron/output/<job_id>/` 下最近的 `.md` 文件，看是否有 `Permission denied` 错误。相关 commit: `ssh-bruteforce-guard/scripts/monitor.sh`。
+- **静默 Watchdog 模式**：高频定时监控脚本（每小时/每30分钟）应默认静默——无异常时 stdout 为空（不发送通知），只在检测到问题时才输出。实现方式：正常路径 `exit 0` 且不 echo 到 stdout，异常路径才 echo 到 stdout。本地日志用 `sudo tee -a` 始终记录，便于事后排查。用户明确表示不希望"每小时都收到消息"，只在有新封禁/新异常时通知。
 - **`find` + `set -e` 静默退出**：`emergency_monitor.sh` 使用 `set -euo pipefail`。`find` 命令在找不到匹配文件时返回 exit code 1，会被 `set -e` 捕获导致脚本**静默退出**（无任何输出、无错误信息）。修复：所有 `find` 赋值命令必须加 `|| true`，例如 `BAD_SUID=$(find /tmp ... -perm -4000 -type f 2>/dev/null || true)`。调试此类问题时，临时将 `set -euo pipefail` 改为 `set -uo pipefail`（去掉 `-e`）可快速定位是否是 `set -e` 导致的。
 - `ufw status` 可能在云服务器上返回 `Status: inactive`（云厂商使用 iptables/nftables）。配合 `iptables -L -n` 交叉验证。
 - `journalctl` 需要 sudo 权限。如果没有 passwordless sudo，跳过 journalctl 相关检查。
 - `fail2ban` 为可选依赖。未安装时不影响其他检查。
 - 首次运行时 SSH 暴力破解阈值建议从宽松开始（100/24h），逐渐收紧。
-- `/etc/shadow` 中 `!!` 表示账户已被锁定（安全），`!` + 空字符串才是空密码。
+- `/etc/shadow` 密码字段含义：`$id$salt$hash` = 有密码哈希，`!` 或 `!!` = 账户已锁定（安全，不应报警），`*` = 账户禁用，`` (空字符串) = 无密码（CRITICAL）。Phase 6 的 awk 检查仅匹配 `$2 == ""`（真正空密码），不匹配 `!`（锁定）。
 
 ### Hermes 安全策略限制
+
+- **Terminal 工具 `&&` 误解析**：Hermes terminal 工具会将 bash 命令中的 `&&` 误解析为后台操作符（`&`），导致 "Foreground command uses '&' backgrounding" 错误。**所有多步骤 bash 命令必须拆分为独立的 `terminal()` 调用**，不要用 `&&` 串联。同样，`if/else/fi` 块在 `eval` 包装器中会报 `syntax error near unexpected token 'else'`——Docker 等条件检查也必须拆分。已知受影响的 Phase：5（恶意进程）、10（Docker）。其他 Phase 如需组合命令，同样应拆分。
 - `sudo ufw status` / `sudo iptables -L -n`（Phase 1）需要终端输入密码，在 cron 模式下会失败。依赖云服务器安全组作为主防御层，报告中标注"因安全策略无法验证"即可。
 - `sudo sed -i ... /etc/ssh/sshd_config`（Phase 3 自动修复）被 Hermes 安全策略拦截（判定为"in-place edit of system config"）。**SSH 修复无法在本次会话中自动完成**——必须在终端中手动执行。报告中列出完整修复命令供用户复制，不要允诺"自动修复完成"。
-- `sudo awk ... /etc/shadow`（Phase 6）可能被 Hermes 安全扫描拦截（变体选择子检测）。被拦截时依然能从已有的 `/etc/passwd` 信息判断大部分安全问题（UID 0 非 root、空 shell 等）。
+- **Emoji/Unicode 变体选择子拦截**：Hermes 安全策略会扫描 terminal 命令中的 Unicode 变体选择子（VS1-256），触发 `tirith:variation_selector` 检测。**任何包含 emoji 字符（✅、⚠️、❌、🛡️ 等）的 terminal 命令都会被拦截**，包括 `sudo awk ... /etc/shadow`（Phase 6）和 `echo` 汇总块。**规避方法**：在 terminal 命令中使用纯 ASCII 文本（如 `[OK]`、`[WARN]`、`[CRITICAL]`），不要使用 emoji。报告的最终输出（作为 agent response 而非 terminal 命令）可以正常使用 emoji。
 - `sudo auditctl -s` 和 `sudo auditctl -l`（Phase 18）可能被标记为"privilege flag"而拦截。Skill 2.0.0+ 已提供 `command -v` + `dpkg -l` 退路路径，直接执行即可。注意：**不要将多个 sudo 命令包装在 `if-then-elif` 单行中**——Hermes 策略会扫描整个命令文本，如果包含 `sudo auditctl`（即使 `command -v` 会先返回 false），仍会被标记为"privilege flag"而整个拒绝。应分别用独立的 `terminal()` 调用执行 `command -v auditctl` → `dpkg -l auditd` → 分步判断。
 - 如果某个 Phase 的 sudo 命令被持续拦截，跳过该子项、继续后续检查，不要重试同一命令三次以上。报告中标明"因安全策略跳过"即可。
 
@@ -597,3 +691,4 @@ hermes cron create --name "紧急安全监控" \
 - `authorized_keys` 只显示前 60 字符，不显示完整公钥。
 - 暴露的 /etc/shadow 哈希值绝不在输出中展示——只检查空密码和锁定状态。
 - 如果检查脚本被用于 cron，确保 sudo 策略文件 (emergency-monitor) 的最小权限原则（`NOPASSWD: /usr/bin/journalctl` 而不是 `ALL`）。
+- 完整的 `no_agent` cron 脚本编写陷阱（权限、静默模式、日志写入）见 `references/no_agent-cron-script-patterns.md`。
