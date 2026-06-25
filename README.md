@@ -13,6 +13,7 @@ Hermes Agent 生产级技能仓库 — 由 [P1M0U](https://github.com/P1M0U) 维
 | [🤖 hermes-health-check](./hermes-health-check/) | v2.1.0 | Hermes Agent 生产级健康检查 — 8 阶段诊断、加权评分、Watchdog 定时监控 |
 | [🛡️ security-health-check](./security-health-check/) | v2.6.0 | 服务器生产级安全审计 — 20 项 CIS 级别检查、SSH 加固、恶意进程扫描、Docker 安全、TLS 证书检查 |
 | [🔒 ssh-bruteforce-guard](./ssh-bruteforce-guard/) | v1.0.0 | SSH暴力破解自动封禁监控 — 检测每小时攻击超过阈值的IP，自动通过fail2ban和ufw封禁 |
+| [🌟 weekly-oss-recommend](./weekly-oss-recommend/) | v1.0.0 | 每周优秀开源项目推荐 — 覆盖 Python AI Agent、Go、Vue3 等 5 个方向 28 个搜索关键词 |
 
 ---
 
@@ -93,6 +94,29 @@ hermes cron create --name "SSH暴力破解监控" \
 
 ---
 
+## 🌟 weekly-oss-recommend
+
+**每周优秀开源项目推荐**，覆盖 **5 个技术方向**，共 **28 个搜索关键词**：
+
+- Python AI Agent（9 个关键词）
+- Python 其他（3 个关键词）
+- Go 语言（8 个关键词）
+- Vue3 前端（5 个关键词）
+- 主流框架/生态（3 个关键词）
+
+### 快速开始
+
+```bash
+# 定时推荐（周六 + 周日早上 10:00，推送到飞书）
+hermes cron create --name "优秀开源项目推荐（周六）" \
+  --schedule "0 2 * * 6" \
+  --skill weekly-oss-recommend \
+  --prompt "推荐一个优秀开源项目" \
+  --deliver "feishu:oc_92c9b46accd79149769c935fed40c9a4"
+```
+
+---
+
 ## 🚀 部署指南
 
 将技能复制到目标 Hermes Agent 的 skills 目录：
@@ -111,6 +135,9 @@ cp -r /tmp/skills-space/security-health-check ~/.hermes/skills/
 cp -r /tmp/skills-space/ssh-bruteforce-guard ~/.hermes/skills/security/
 mkdir -p ~/.hermes/scripts/ssh-guard
 # 需要手动创建监控脚本（见 ssh-bruteforce-guard/README.md）
+
+# 安装 weekly-oss-recommend
+cp -r /tmp/skills-space/weekly-oss-recommend ~/.hermes/skills/
 ```
 
 或者直接告诉 Hermes Agent：
